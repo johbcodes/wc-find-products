@@ -1,17 +1,18 @@
 <?php
 /*
-Plugin Name: WooCommerce Duplicate Product Finder
-Description: Identifies and manages duplicate products in WooCommerce based on product titles
-Version: 1.2
-Author: Joseah B. https://github.com/johbcodes/wc-find-products.git
-*/
+* Plugin Name: WooCommerce Duplicate Product Finder
+* Description: Identifies and manages duplicate products in WooCommerce based on product titles
+* Version:          1.0.0
+* Author:           Joseah Biwott
+* Author URI:          https://github.com/johbcodes/wc-find-products.git
+* Text Domain:      elementor-test-addon
+* Requires Plugins: elementor
+ */
 
-// Prevent direct access
 if (!defined('ABSPATH')) {
     exit;
 }
 
-// Add menu item to WooCommerce admin menu
 function wdpf_add_admin_menu()
 {
     add_submenu_page(
@@ -25,7 +26,6 @@ function wdpf_add_admin_menu()
 }
 add_action('admin_menu', 'wdpf_add_admin_menu');
 
-// Admin page content
 function wdpf_admin_page()
 {
 ?>
@@ -38,6 +38,9 @@ function wdpf_admin_page()
         } elseif (isset($_POST['delete_duplicates'])) {
             wdpf_delete_duplicates();
             wdpf_find_duplicates();
+        } elseif (isset($_POST['delete_all_duplicates'])) {
+            wdpf_delete_all_duplicates();
+            wdpf_find_duplicates();
         }
         ?>
 
@@ -48,7 +51,6 @@ function wdpf_admin_page()
     <?php
 }
 
-// Function to find and display duplicate products
 function wdpf_find_duplicates()
 {
     if (!class_exists('WooCommerce')) {
@@ -69,7 +71,6 @@ function wdpf_find_duplicates()
     $product_titles = array();
     $duplicates = array();
 
-    // Collect all product data
     if ($products->have_posts()) {
         while ($products->have_posts()) {
             $products->the_post();
@@ -79,7 +80,7 @@ function wdpf_find_duplicates()
 
             $product_data = array(
                 'id' => $id,
-                'price' => floatval($product->get_price()),
+                'price' => floatval($product->get_price() ?: PHP_INT_MAX), // Use max int if no price
                 'categories' => wp_get_post_terms($id, 'product_cat', array('fields' => 'names')),
                 'date' => get_the_date('Y-m-d H:i:s')
             );
@@ -96,7 +97,6 @@ function wdpf_find_duplicates()
         wp_reset_postdata();
     }
 
-    // Paginate duplicates
     $duplicate_groups = array_filter($duplicates, function ($group) {
         return count($group) > 1;
     });
@@ -105,7 +105,6 @@ function wdpf_find_duplicates()
     $offset = ($paged - 1) * $items_per_page;
     $paged_duplicates = array_slice($duplicate_groups, $offset, $items_per_page, true);
 
-    // Display results
     if (!empty($paged_duplicates)) {
         echo '<h2>Found Potential Duplicates</h2>';
         echo '<form method="post" id="duplicate-form">';
@@ -125,7 +124,7 @@ function wdpf_find_duplicates()
                 echo '<tr>';
                 echo '<td>' . esc_html($title) . '</td>';
                 echo '<td><a href="' . get_edit_post_link($product['id']) . '" target="_blank">#' . $product['id'] . '</a></td>';
-                echo '<td>' . wc_price($product['price']) . '</td>';
+                echo '<td>' . wc_price($product['price'] == PHP_INT_MAX ? 0 : $product['price']) . '</td>';
                 echo '<td>' . implode(', ', $product['categories']) . '</td>';
                 echo '<td>' . $product['date'] . '</td>';
                 echo '<td><input type="checkbox" name="delete_ids[]" value="' . $product['id'] . '" class="delete-checkbox"></td>';
@@ -134,7 +133,10 @@ function wdpf_find_duplicates()
         }
 
         echo '</tbody></table>';
-        echo '<p><input type="submit" name="delete_duplicates" class="button button-danger" value="Delete Selected (Keep Lowest Price)" onclick="return confirm(\'Are you sure? This will delete selected duplicates, keeping the lowest priced product in each group.\');"></p>';
+        echo '<p>';
+        echo '<input type="submit" name="delete_duplicates" class="button button-danger" value="Delete Selected (Keep Lowest Price)" onclick="return confirm(\'Are you sure? This will delete selected duplicates, keeping the lowest priced product in each group.\');"> ';
+        echo '<input type="submit" name="delete_all_duplicates" class="button button-danger" value="Delete All Duplicates (Keep Lowest Price)" onclick="return confirm(\'Are you sure? This will delete ALL duplicates across all pages, keeping only the lowest priced product in each group. This action cannot be undone.\');">';
+        echo '</p>';
         echo '</form>';
 
         // Pagination
@@ -155,7 +157,6 @@ function wdpf_find_duplicates()
     }
 }
 
-// Function to delete duplicates, keeping lowest price
 function wdpf_delete_duplicates()
 {
     if (!isset($_POST['delete_ids']) || !is_array($_POST['delete_ids'])) {
@@ -172,7 +173,6 @@ function wdpf_delete_duplicates()
     $products = new WP_Query($args);
     $title_groups = array();
 
-    // Group products by title
     if ($products->have_posts()) {
         while ($products->have_posts()) {
             $products->the_post();
@@ -182,21 +182,17 @@ function wdpf_delete_duplicates()
 
             $title_groups[$title][] = array(
                 'id' => $id,
-                'price' => floatval($product->get_price())
+                'price' => floatval($product->get_price() ?: PHP_INT_MAX)
             );
         }
         wp_reset_postdata();
     }
 
-    // Process deletions
     foreach ($title_groups as $title => $group) {
         if (count($group) > 1) {
-            // Sort by price
             usort($group, function ($a, $b) {
                 return $a['price'] - $b['price'];
             });
-
-            // Keep lowest priced product (first in sorted array)
             $keep_id = $group[0]['id'];
 
             foreach ($group as $product) {
@@ -210,7 +206,52 @@ function wdpf_delete_duplicates()
     echo '<div class="updated"><p>Selected duplicates deleted, lowest priced products retained.</p></div>';
 }
 
-// Add styling and JavaScript
+function wdpf_delete_all_duplicates()
+{
+    $args = array(
+        'post_type' => 'product',
+        'posts_per_page' => -1,
+        'post_status' => 'publish',
+    );
+
+    $products = new WP_Query($args);
+    $title_groups = array();
+    $deleted_count = 0;
+
+    if ($products->have_posts()) {
+        while ($products->have_posts()) {
+            $products->the_post();
+            $id = get_the_ID();
+            $title = get_the_title();
+            $product = wc_get_product($id);
+
+            $title_groups[$title][] = array(
+                'id' => $id,
+                'price' => floatval($product->get_price() ?: PHP_INT_MAX)
+            );
+        }
+        wp_reset_postdata();
+    }
+
+    foreach ($title_groups as $title => $group) {
+        if (count($group) > 1) {
+            usort($group, function ($a, $b) {
+                return $a['price'] - $b['price'];
+            });
+
+            $keep_id = $group[0]['id'];
+            $deleted_count += count($group) - 1;
+
+            array_shift($group);
+            foreach ($group as $product) {
+                wp_delete_post($product['id'], true);
+            }
+        }
+    }
+
+    echo '<div class="updated"><p>Deleted ' . $deleted_count . ' duplicate products across all groups, keeping the lowest priced product in each.</p></div>';
+}
+
 function wdpf_admin_styles()
 {
     $screen = get_current_screen();
@@ -229,6 +270,7 @@ function wdpf_admin_styles()
                 background: #dc3232;
                 border-color: #dc3232;
                 color: white;
+                margin-right: 10px;
             }
 
             .button-danger:hover {
